@@ -6,7 +6,8 @@
 #include<algorithm>
 #include<string>
 #include<map>
-//the constants should be moved to the class itself later probably
+#include<thread>
+#include<mutex>
 const int mod = 3;
 const int dim = 4;
 const int table_size = 12;
@@ -14,7 +15,7 @@ const std::string colors[3] = {"purple", "red", "green"};
 const std::string numbers[3] = {"one", "two", "three"};
 const std::string shapes[3] = {"ovals", "squiggles", "diamonds"};
 const std::string fills[3] = {"empty", "striped", "filled"};
-
+std::mutex stats_mutex;
 struct F3{
 	int x;
 	F3(): x(0){}
@@ -53,7 +54,7 @@ struct Game{
 	Game(int sd, bool verb=false){//initialize a game
 		finished = false;
 		seed = sd;
-		verbose=verb;
+		verbose=verb;	
 		rng.seed(seed);
 		for(int i = 0; i < 81; i++){
 			deck.push_back(Card({i%3, (i/3)%3, (i/9)%3, (i/27)%3}));
@@ -61,7 +62,7 @@ struct Game{
 		std::shuffle(deck.begin(), deck.end(), rng);
 	}
 
-	std::vector<Card> choose(){//just random for 
+	std::vector<Card> choose(){//just random for now
 		auto it = existing_sets.begin();
 		int random_choice = rng()%(int)existing_sets.size();
 		std::advance(it, random_choice);
@@ -119,12 +120,40 @@ struct Game{
 };
 
 
+void simulate_range(int start, int end, std::map<int, int>& local_stats) {
+    std::map<int, int> private_stats;
+    for (int i = start; i < end; i++) {
+        Game G(i);
+        private_stats[G.play()]++;
+    }
+
+    std::lock_guard<std::mutex> lock(stats_mutex);
+    for (const auto& [key, value] : private_stats) {
+        local_stats[key] += value;
+    }
+}
+
 
 int main(){
 	std::map<int,int>stats;
-	for(int i = 1; i <= 100000; i++){
-		Game G(i);
-		stats[G.play()]++;
+	std::vector<std::thread>threads;
+	const int num_simulations = 100000;
+	const int num_threads = std::thread::hardware_concurrency();
+    int chunk_size = num_simulations/num_threads;
+	for (int t = 0; t < num_threads; t++) {
+        int start = t * chunk_size + 1;
+        int end = (t == num_threads - 1) ? num_simulations + 1 : start + chunk_size;
+		threads.emplace_back(simulate_range, start, end, std::ref(stats));
 	}
-	for(auto p : stats)std::cout << p.first << ' ' << p.second << '\n';
+
+    for (auto& th : threads) {
+        th.join();
+    }
+	int total = 0;
+    for (const auto& [key, value] : stats) {
+        total += value;
+		std::cout << "Outcome " << key << ": " << value << " times\n";
+    }
+	std::cout << "Total: " << total << '\n';
+
 }
