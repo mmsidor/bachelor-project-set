@@ -21,7 +21,9 @@ std::mutex stats_mutex;
 enum Selection{
 	RANDOM,
 	QUASITHRIFTY,
-	THRIFTY
+	THRIFTY,
+	WEIGHTEDTHRIFTY
+
 };
 
 
@@ -79,7 +81,7 @@ struct Game{
 		seed = sd;
 		verbose=verb;	
 		rng.seed(seed);
-		s = RANDOM;
+		s = THRIFTY;
 		for(int i = 0; i < 81; i++){
 			Card C1 = Card(i);
 			for(int j = i+1; j < 81; j++){
@@ -148,6 +150,7 @@ struct Game{
 	std::vector<Card>thrifty_choose(){
 		auto min_impact_sets = find_all_min_impact();
 		auto chosen_set = min_impact_sets[0];
+		if(min_impact_sets.size() == 1)return chosen_set;
 		int lowest_imp = 10000;
 		for(auto set: min_impact_sets){
 			int imp = 0;
@@ -171,10 +174,57 @@ struct Game{
 		return chosen_set;
 	}
 
+	std::vector<Card>weighted_thrifty_choose(){
+		auto min_impact_sets = find_all_min_impact();
+		auto chosen_set = min_impact_sets[0];
+		if(min_impact_sets.size() == 1)return chosen_set;
+		long double lowest_imp = 100000.0;
+		for(auto set: min_impact_sets){
+			long double imp = 0;
+			std::vector<std::vector<Card>>removed;
+			std::vector<std::vector<Card>> new_possible_sets;
+			for(auto poset : possible_sets){
+				if(intersect(poset, set)){
+					removed.push_back(poset);
+				}
+			}
+			std::set_difference(possible_sets.begin(), possible_sets.end(), removed.begin(), removed.end(), std::inserter(new_possible_sets, new_possible_sets.begin()));
+			for(auto poset: new_possible_sets){
+				int needed = 3;
+				for(auto table_card : table){
+					for(auto card : poset){
+						if(table_card == card)needed--;
+					}
+				}
+				int k = deck.size();
+				double prob = 1;
+				if(k == 0){
+					if(needed > 0)prob = 0;
+				} else {
+					if(needed == 3){
+						prob = 6.0/(k*(k-1)*(k-2));
+					} else if(needed == 2){
+						prob = 6.0/(k*(k-1));
+					} else if(needed = 1){
+						prob = 3.0/k;
+					} else prob = 1;
+				}
+				imp += prob * calculate_impact(poset, new_possible_sets);
+			}
+
+			if(imp < lowest_imp){
+				lowest_imp = imp;
+				chosen_set = set;
+			}
+		}
+		return chosen_set;	
+	}
+
 	std::vector<Card>choose(){
 		if(s == RANDOM)return random_choose();
 		if(s == QUASITHRIFTY)return quasi_thrifty_choose();
 		if(s == THRIFTY)return thrifty_choose();
+		if(s == WEIGHTEDTHRIFTY)return weighted_thrifty_choose();
 		return random_choose();
 	}
 
@@ -257,7 +307,7 @@ void simulate_range(int start, int end, std::map<int, int>& local_stats) {
 int main(){
 	std::map<int,int>stats;
 	std::vector<std::thread>threads;
-	const int num_simulations = 100000;
+	const int num_simulations = 100;
 	const int num_threads = std::thread::hardware_concurrency();
     int chunk_size = num_simulations/num_threads;
 	for (int t = 0; t < num_threads; t++) {
