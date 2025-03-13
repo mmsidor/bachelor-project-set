@@ -8,6 +8,8 @@
 #include<map>
 #include<thread>
 #include<mutex>
+#include<cassert>
+#include<climits>
 const int mod = 3;
 const int dim = 4;
 const int table_size = 12;
@@ -16,6 +18,13 @@ const std::string numbers[3] = {"one", "two", "three"};
 const std::string shapes[3] = {"ovals", "squiggles", "diamonds"};
 const std::string fills[3] = {"empty", "striped", "filled"};
 std::mutex stats_mutex;
+enum Selection{
+	RANDOM,
+	QUASITHRIFTY,
+	THRIFTY
+};
+
+
 struct F3{
 	int x;
 	F3(): x(0){}
@@ -31,6 +40,9 @@ struct Card{
 	Card(std::array<F3,4>aa){
 		a = aa;
 	}
+	Card(int x){
+		a = {x%3, (x/3)%3, (x/9)%3, (x/27)%3};
+	}
 	std::string human_card(){
 		return numbers[a[0].x] + ' ' + colors[a[1].x] + ' ' + fills[a[2].x] + ' ' + shapes[a[3].x];
 	}
@@ -42,6 +54,16 @@ struct Card{
 	bool operator==(Card C)const{return a[0]==C.a[0] && a[1] == C.a[1] && a[2] == C.a[2] && a[3] == C.a[3];}
 };
 
+bool intersect(std::vector<Card>A, std::vector<Card>B){
+	bool res = false;
+	for(int i = 0; i < 3; i++){
+		for(int j = 0; j < 3; j++){
+			if(A[i] == B[j])res = true;
+		}
+	}
+	return res;
+}
+
 struct Game{
 	int seed;
 	bool finished;
@@ -50,23 +72,110 @@ struct Game{
 	std::vector<Card>deck;
 	std::set<Card>table;
 	std::set<std::vector<Card>>existing_sets;
-	
+	std::set<std::vector<Card>>possible_sets;
+	Selection s;
 	Game(int sd, bool verb=false){//initialize a game
 		finished = false;
 		seed = sd;
 		verbose=verb;	
 		rng.seed(seed);
+		s = RANDOM;
+		for(int i = 0; i < 81; i++){
+			Card C1 = Card(i);
+			for(int j = i+1; j < 81; j++){
+				Card C2 = Card(j);
+				for(int k = j + 1; k < 81; k++){
+					Card C3 = Card(k);
+					if(-(C1 + C2) == C3){
+						possible_sets.insert({C1, C2, C3});
+					}
+				}
+			}
+		}
+
 		for(int i = 0; i < 81; i++){
 			deck.push_back(Card({i%3, (i/3)%3, (i/9)%3, (i/27)%3}));
 		}
 		std::shuffle(deck.begin(), deck.end(), rng);
 	}
 
-	std::vector<Card> choose(){//just random for now
+	std::vector<Card> random_choose(){
 		auto it = existing_sets.begin();
 		int random_choice = rng()%(int)existing_sets.size();
 		std::advance(it, random_choice);
 		return *it;
+	}
+
+	int calculate_impact(std::vector<Card>set, const std::vector<std::vector<Card>>& possible = std::vector<std::vector<Card>>(0)){
+		int res = 0;
+		if(possible.empty()){
+			for(auto poset : possible_sets){
+				if(intersect(set, poset)){
+					res++;
+				}
+			}
+		} else{
+			for(auto poset : possible){
+				if(intersect(set, poset))
+					res++;
+			}
+		}
+		return res;
+	}
+	std::vector<std::vector<Card>>find_all_min_impact(){
+		int min_impact = 10000;
+		std::vector<int>impact(existing_sets.size());
+		int it = 0;
+		for(auto set : existing_sets){
+			int imp = calculate_impact(set);
+			impact[it++] = imp;
+			min_impact =  std::min(min_impact, imp);
+		}
+		std::vector<std::vector<Card>>res;
+		it = 0;
+		for(auto set: existing_sets){
+			if(impact[it++] == min_impact)//optimize later
+				res.push_back(set);
+		}
+		return res;
+	}
+	std::vector<Card>quasi_thrifty_choose(){
+		auto min_impact_sets = find_all_min_impact();
+		assert(!min_impact_sets.empty());
+		return min_impact_sets[0];
+	}
+
+	std::vector<Card>thrifty_choose(){
+		auto min_impact_sets = find_all_min_impact();
+		auto chosen_set = min_impact_sets[0];
+		int lowest_imp = 10000;
+		for(auto set: min_impact_sets){
+			int imp = 0;
+			std::vector<std::vector<Card>>removed;
+			std::vector<std::vector<Card>> new_possible_sets;
+			for(auto poset : possible_sets){
+				if(intersect(poset, set)){
+					removed.push_back(poset);
+				}
+			}
+			std::set_difference(possible_sets.begin(), possible_sets.end(), removed.begin(), removed.end(), std::inserter(new_possible_sets, new_possible_sets.begin()));
+			for(auto poset: new_possible_sets){
+				imp += calculate_impact(poset, new_possible_sets);
+			}
+
+			if(imp < lowest_imp){
+				lowest_imp = imp;
+				chosen_set = set;
+			}
+		}
+		return chosen_set;
+	}
+
+	std::vector<Card>choose(){
+		if(s == RANDOM)return random_choose();
+		if(s == QUASITHRIFTY)return quasi_thrifty_choose();
+		if(s == THRIFTY)return thrifty_choose();
+		return random_choose();
 	}
 
 
@@ -110,6 +219,17 @@ struct Game{
 				}
 			}
 		}
+		for(auto it = possible_sets.begin(); it != possible_sets.end(); ){
+			auto itt = it++;
+			auto set = *itt;
+			for(Card x : removed_set){
+				if(x == set[0] or x == set[1] or x == set[2]){
+					possible_sets.erase(set);
+					break;
+				}
+			}
+		}
+
 	}
 	int play(){
 		while(!finished){
